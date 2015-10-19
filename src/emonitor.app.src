@@ -1,0 +1,13 @@
+{application, emonitor,
+ [
+  {description, "Application monitoring framework"},
+  {vsn, "0.3"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  lager
+                 ]},
+  {mod, { emonitor_app, []}},
+  {env, []}
+ ]}.
