@@ -57,7 +57,6 @@ handle_call(show_all, _From, State) ->
     begin
         TableFullList = ets:match(TableName, {'$1', '$2'}),
         TableList = [begin ets:delete(TableName, X), Y end || [X, Y] <- TableFullList],  %% format {uuid, int()|list()|atom()|binary()}
-      error_logger:error_report([{lists, TableList}, {full, TableFullList}]),
         case catch Function(TableList, Acc) of
         {save, Val, NewAcc} when is_list(Val)->
              ets:delete(?TABLE_NAME, TableName),
@@ -133,6 +132,28 @@ handle_info(monitoring_notify, State) when (State#st.enable == false) ->
     {noreply, #st{
         timeout = State#st.timeout,
         hostname = State#st.hostname
+    }}
+;
+handle_info(monitoring_notify, State)->
+    Port = case State#st.zabbix of
+       P when is_port(P)-> 
+            P;
+       undefined-> 
+            start_zabbix() 
+    end,
+
+    Send = fun(Key, Val)->  
+       Message = io_lib:format("~s ~s ~w\n", [State#st.hostname, Key, Val]),
+       Port ! {self(), {command, Message}} 
+    end,
+
+    {reply, Result, _} = handle_call(show_all, undefined, State),
+    [ Send(RKey, RValue)|| {RKey, RValue} <- Result],
+
+    erlang:send_after(State#st.timeout, self(), monitoring_notify),
+    {noreply, #st{
+	timeout = State#st.timeout,
+	hostname = State#st.hostname
     }}
 ;
 handle_info({Port, {data, _Data}}, State) when is_port(Port)->
