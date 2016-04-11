@@ -7,7 +7,7 @@
 %% API Function Exports
 %% ------------------------------------------------------------------
 
--export([start_link/0, show_all/0, add/1, del/1]).
+-export([start_link/0, show_all/0, add/1, add/2, del/1]).
 
 %% ------------------------------------------------------------------
 %% gen_server Function Exports
@@ -37,6 +37,10 @@ add(Type)->
     catch ets:insert(Type, [{make_ref(), 1}])
 .
 
+add(Type, Data)->
+    catch ets:insert(Type, [{make_ref(), Data}])
+.
+
 del(Type)->
     catch ets:insert(Type, [{make_ref(), -1}])
 .
@@ -57,6 +61,7 @@ handle_call(show_all, _From, State) ->
     begin
         TableFullList = ets:match(TableName, {'$1', '$2'}),
         TableList = [begin ets:delete(TableName, X), Y end || [X, Y] <- TableFullList],  %% format {uuid, int()|list()|atom()|binary()}
+        %%error_logger:error_report([{lists, TableList}, {full, TableFullList}]),
         case catch Function(TableList, Acc) of
         {save, Val, NewAcc} when is_list(Val)->
              ets:delete(?TABLE_NAME, TableName),
@@ -74,7 +79,8 @@ handle_call(show_all, _From, State) ->
         {done, Val} ->
              {TableName, Val}
         ;
-        _->
+        _RRR->
+             error_logger:info_report([other, _RRR]),
              {TableName, undefined}
         end % case Function(TableList)
     end || [TableName, Constructor, Function, Acc] <- All],
@@ -83,20 +89,21 @@ handle_call(show_all, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast({add, Type}, State) ->
-    catch ets:insert(Type, [{make_ref(), 1}]),
-    {noreply, State}
-;
-handle_cast({del, Type}, State) ->
-    catch ets:insert(Type, [{make_ref(), -1}]),
-    {noreply, State}
-;
+%handle_cast({add, Type}, State) ->
+%    catch ets:insert(Type, [{make_ref(), 1}]),
+%    {noreply, State}
+%;
+%handle_cast({del, Type}, State) ->
+%    catch ets:insert(Type, [{make_ref(), -1}]),
+%    {noreply, State}
+%;
 handle_cast(Msg, State) ->
     lager:debug("Monitor client 2: strange cast message ~p~n", [Msg]),
-    {noreply, State}.
+    {noreply, State}
+.
 
 handle_info(init, State) ->
-    erlang:send_after(State#st.timeout, self(), monitoring_notify),
+    erlang:send_after(State#st.timeout, self(), send_to_zabbix),
 
     SrcHost = case application:get_env(emonitor, src_host) of
     {ok, {name, SrcHost2}}->
@@ -119,22 +126,36 @@ handle_info(init, State) ->
         {noreply, State}
     end
 ;
-handle_info({Port, {exit_status, Exit}}, State) when is_port(Port)->
-    lager:warning("Monitoring cosnsole client is down. Exit Code: ~p~n", [Exit]),
+handle_info({Port, {exit_status, ExitCode}}, State) when is_port(Port)->
+    lager:warning("ZabbixClent is down. Exit Code: ~p~n", [ExitCode]),
     {noreply, State#st{
         zabbix = undefined, 
         enable = true, 
         hostname = State#st.hostname
     }}
 ;
-handle_info(monitoring_notify, State) when (State#st.enable == false) ->
-    erlang:send_after(State#st.timeout, self(), monitoring_notify),
-    {noreply, #st{
-        timeout = State#st.timeout,
-        hostname = State#st.hostname
+handle_info(send_to_zabbix, State) when (State#st.enable == false) ->
+    erlang:send_after(State#st.timeout, self(), send_to_zabbix),
+
+    {reply, Result, State} = handle_call(show_all, none, State),
+    Result1 = [ R || {_, Y} = R <-lists:flatten(Result), Y /= undefined] ++ 
+             [ {X,  0} || {X, undefined} <-lists:flatten(Result)],
+    
+    case application:get_env(emonitor, tty, false) of
+    true->
+        lager:warning("Result zabbix: ~p~n", [Result1])
+    ;
+    false->
+        none
+    end,
+
+    {noreply, 
+	#st{
+            timeout = State#st.timeout,
+            hostname = State#st.hostname
     }}
 ;
-handle_info(monitoring_notify, State)->
+handle_info(send_to_zabbix, State)->
     Port = case State#st.zabbix of
        P when is_port(P)-> 
             P;
@@ -142,23 +163,58 @@ handle_info(monitoring_notify, State)->
             start_zabbix() 
     end,
 
-    Send = fun(Key, Val)->  
-       Message = io_lib:format("~s ~s ~w\n", [State#st.hostname, Key, Val]),
-       Port ! {self(), {command, Message}} 
+    {reply, Result, State} = handle_call(show_all, none, State),
+    Result1 = [ R || {_, Y} = R <-lists:flatten(Result), Y /= undefined] ++ 
+             [ {atom_to_list(X),  0} || {X, undefined} <-lists:flatten(Result)],
+    case application:get_env(emonitor, tty, false) of
+    true->
+        lager:warning("Result zabbix: ~p~n", [Result1])
+    ;
+    false->
+        none
     end,
 
-    {reply, Result, _} = handle_call(show_all, undefined, State),
-    [ Send(RKey, RValue)|| {RKey, RValue} <- Result],
+    Send = fun(Key, Value)->  
+       M = io_lib:format("~s ~s ~w\n", [State#st.hostname, Key, Value]),
+       Port ! {self(), {command, M}} 
+    end,
 
-    erlang:send_after(State#st.timeout, self(), monitoring_notify),
-    {noreply, #st{
-	timeout = State#st.timeout,
-	hostname = State#st.hostname
+    [ catch Send(X,Y) || {X,Y} <- Result1],
+
+		    %{ok, Files} = file:list_dir("/proc/" ++ os:getpid() ++ "/fd"),
+		    %FDCount = length(Files),
+		    %Send(State#st.'vm.proc.overload.mem.num'),        %% Это на будущее
+		    %Send(State#st.'vm.proc.overload.mbox.num'),  %% Это на будущее
+		    %Send((State#st.'vm.proc.max.num')#kv{val=erlang:system_info(process_count)}),
+		    %Send((State#st.'vm.proc.cur.num')#kv{val=erlang:system_info(process_count)}),
+		    %Send((State#st.'db.ets.max.num')#kv{val=length(ets:all())}),
+		    %Send((State#st.'db.ets.cur.num')#kv{val=length(ets:all())}),
+		    %Send((State#st.'file.cur.num')#kv{val=FDCount}),
+		    %Send((State#st.'port.max.num')#kv{val=erlang:system_info(port_count)} ),
+		    %Send((State#st.'port.cur.num')#kv{val=erlang:system_info(port_count)} ),
+		    %Send((State#st.'vm.memory.total.num')#kv{val = erlang:memory(total) }),
+		    %Send((State#st.'vm.memoty.binary.num')#kv{val = erlang:memory(binary)}),
+		    %Send((State#st.'vm.memory.atom.num')#kv{val = erlang:memory(atom)}),
+		    %Send((State#st.'vm.memory.ets.num')#kv{val = erlang:memory(ets)}),
+		    %Send(State#st.'vm.exception.num'),
+
+
+    %Тут нормализуем среднее время к одной секунде.
+    %catch Send((State#st.'db.redis.median.time')#kv{val=trunc(( (State#st.'db.redis.median.time')#kv.val / (State#st.'db.redis.median.time')#kv.count ) / trunc(State#st.timeout/1000) )}),
+
+    erlang:send_after(State#st.timeout, self(), send_to_zabbix),
+    {noreply, 
+	#st{zabbix = Port,
+            timeout = State#st.timeout,
+            enable = true,
+            hostname = State#st.hostname
     }}
 ;
-handle_info({Port, {data, _Data}}, State) when is_port(Port)->
-    {noreply, State}
-;
+
+%%handle_info({Port, {data, Data}}, State) when is_port(Port)->
+%%    lager:debug("Zabbix Client: [SAY] ~p~n", [Data]),
+%%    {noreply, State}
+%%;
 handle_info(Info, State) ->
     lager:debug("Emonitor client 2: strange info message ~p~n", [Info]),
     {noreply, State}.
