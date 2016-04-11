@@ -198,7 +198,6 @@ handle_info(send_to_zabbix, State)->
 		    %Send((State#st.'vm.memory.ets.num')#kv{val = erlang:memory(ets)}),
 		    %Send(State#st.'vm.exception.num'),
 
-
     %Тут нормализуем среднее время к одной секунде.
     %catch Send((State#st.'db.redis.median.time')#kv{val=trunc(( (State#st.'db.redis.median.time')#kv.val / (State#st.'db.redis.median.time')#kv.count ) / trunc(State#st.timeout/1000) )}),
 

@@ -19,22 +19,21 @@ start()->
                   fun(_,_)-> ok end, 
                   fun([], Acc)->
                       {save,[
-                             {"erlconto.min.redis",   0},
-                             {"erlconto.max.redis",   0},
-                             {"erlconto.count.redis", 0},
-                             {"erlconto.median.redis", 0}
+                             {"metric.min.redis",   0},
+                             {"metric.max.redis",   0},
+                             {"metric.count.redis", 0},
+                             {"metric.median.redis", 0}
                             ],
                       []} 
                   ;
                      (Data, Acc)->
                       {save,[
-                             {"erlconto.min.redis", lists:min(Data)}, 
-                             {"erlconto.max.redis", lists:max(Data)},
-                             {"erlconto.count.redis", length(Data)},
-                             {"erlconto.median.redis", lists:sum(Data) / length(Data)}
+                             {"metric.min.redis", lists:min(Data)}, 
+                             {"metric.max.redis", lists:max(Data)},
+                             {"metric.count.redis", length(Data)},
+                             {"metric.median.redis", lists:sum(Data) / length(Data)}
                             ],
                       []} 
                   end),
     emonitor_srv:start_sensor(redis, [])
 .
-
